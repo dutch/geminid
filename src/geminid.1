@@ -1,0 +1,25 @@
+.Dd July 6, 2021
+.Os
+.Dt GEMINID 1
+.Sh NAME
+.Nm geminid
+.Nd a small gemini server
+.Sh SYNOPSIS
+.Nm
+.Op Fl dnv
+.Op Fl f Ar path
+.Sh DESCRIPTION
+Run a gemini daemon to respond to client calls.
+.Pp
+Available options:
+.Pp
+.Bl -tag -width "XXXXXXXX" -compact -offset indent
+.It Fl d
+start in debug mode
+.It Fl n
+dry-run (i.e. don't do anything)
+.It Fl f Ar path
+specify config file
+.It Fl v
+verbose mode
+.El
