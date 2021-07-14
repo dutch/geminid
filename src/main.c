@@ -9,9 +9,12 @@
 #include <signal.h>
 #include <syslog.h>
 #include <errno.h>
+#include <sys/types.h>
+#include <sys/socket.h>
 #include <sys/resource.h>
 #include <sys/select.h>
 #include <sys/stat.h>
+#include <netdb.h>
 
 #define ERROR_MAX 128
 #define TEXT_MAX 128
@@ -235,60 +238,121 @@ lex(void)
   return 0;
 }
 
-int
-config_set(struct config *c, char *err, size_t errlen)
+void
+config_set(struct config *c)
 {
   int type;
   char *key, *value;
 
   if ((type = lex()) != STRING) {
-    snprintf(err, errlen, "expected key, got '%s'", text);
-    return 1;
+    syslog(LOG_ERR, "expected key, got '%s'", text);
+    exit(EXIT_FAILURE);
   }
 
   key = strdup(text);
 
   if ((type = lex()) != EQUALS) {
-    snprintf(err, errlen, "expected '=', got '%s'", text);
-    return 1;
+    syslog(LOG_ERR, "expected '=', got '%s'", text);
+    exit(EXIT_FAILURE);
   }
 
   if ((type = lex()) != STRING) {
-    snprintf(err, errlen, "expected value, got '%s'", text);
-    return 1;
+    syslog(LOG_ERR, "expected value, got '%s'", text);
+    exit(EXIT_FAILURE);
   }
 
   value = strdup(text);
 
   if ((type = lex()) != EOL) {
-    snprintf(err, errlen, "expected EOL, got '%s'", text);
-    return 1;
+    syslog(LOG_ERR, "expected EOL, got '%s'", text);
+    exit(EXIT_FAILURE);
   }
 
   if (strcmp(key, "port") == 0) {
     free(c->port);
     c->port = strdup(value);
+    syslog(LOG_DEBUG, "port = '%s'", c->port);
   } else if (strcmp(key, "jobs") == 0) {
     c->jobs = atoi(value);
+    syslog(LOG_DEBUG, "jobs = %d", c->jobs);
   } else if (strcmp(key, "certificate") == 0) {
+    free(c->certificate);
     c->certificate = strdup(value);
+    syslog(LOG_DEBUG, "certificate = '%s'", c->certificate);
   } else if (strcmp(key, "private_key") == 0) {
+    free(c->private_key);
     c->private_key = strdup(value);
+    syslog(LOG_DEBUG, "private_key = '%s'", c->private_key);
   } else {
-    snprintf(err, errlen, "unknown key '%s'", key);
-    return 1;
+    syslog(LOG_ERR, "unknown key '%s'", key);
+    exit(EXIT_FAILURE);
   }
 
   free(value);
   free(key);
+}
 
-  return 0;
+void
+parse_config(const char *confpath, struct config *c)
+{
+  if (!(in = fopen(confpath, "r"))) {
+    syslog(LOG_ERR, "fopen: %s", strerror(errno));
+    exit(EXIT_FAILURE);
+  }
+
+  nextch = fgetc(in);
+
+  while (!feof(in))
+    config_set(c);
+
+  fclose(in);
+}
+
+int
+boundsocket(const char *port)
+{
+  int res, fd, yes;
+  struct addrinfo hints, *info, *p;
+
+  memset(&hints, 0, sizeof(struct addrinfo));
+  hints.ai_family = AF_UNSPEC;
+  hints.ai_socktype = SOCK_STREAM;
+  hints.ai_flags = AI_PASSIVE;
+
+  if ((res = getaddrinfo(NULL, port, &hints, &info)) != 0) {
+    syslog(LOG_ERR, "getaddrinfo: %s", gai_strerror(res));
+    exit(EXIT_FAILURE);
+  }
+
+  yes = 1;
+
+  for (p = info; p; p = p->ai_next) {
+    if ((fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) == -1) {
+      syslog(LOG_DEBUG, "socket: %s", strerror(errno));
+      continue;
+    }
+
+    if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int)) == -1) {
+      syslog(LOG_ERR, "setsockopt: %s", strerror(errno));
+      exit(EXIT_FAILURE);
+    }
+
+    if (bind(fd, p->ai_addr, p->ai_addrlen) == -1) {
+      syslog(LOG_DEBUG, "bind: %s", strerror(errno));
+      close(fd);
+      continue;
+    }
+
+    break;
+  }
+
+  return fd;
 }
 
 int
 main(int argc, char **argv)
 {
-  int bg, dry, verb, ch;
+  int bg, dry, verb, ch, sockfd;
   char errbuf[ERROR_MAX], *confpath;
   struct config c;
 
@@ -333,32 +397,12 @@ main(int argc, char **argv)
   c.certificate = NULL;
   c.private_key = NULL;
 
-  if (!(in = fopen(confpath, "r"))) {
-    syslog(LOG_ERR, "fopen: %s", strerror(errno));
-    return EXIT_FAILURE;
-  }
-
-  nextch = fgetc(in);
-
-  while (!feof(in)) {
-    if (config_set(&c, errbuf, ERROR_MAX) == 1) {
-      syslog(LOG_ERR, errbuf);
-      return EXIT_FAILURE;
-    }
-  }
-
-  fclose(in);
-
-  syslog(LOG_DEBUG, "port = '%s'", c.port);
-  syslog(LOG_DEBUG, "jobs = %d", c.jobs);
-  syslog(LOG_DEBUG, "certificate = '%s'", c.certificate);
-  syslog(LOG_DEBUG, "private_key = '%s'", c.private_key);
+  parse_config(confpath, &c);
 
   if (dry)
-    goto done;
+    return EXIT_SUCCESS;
 
-done:
-  closelog();
+  sockfd = boundsocket(c.port);
 
   return EXIT_SUCCESS;
 }
