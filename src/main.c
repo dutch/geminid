@@ -14,11 +14,14 @@
 #include <sys/resource.h>
 #include <sys/select.h>
 #include <sys/stat.h>
+#include <sys/epoll.h>
 #include <netdb.h>
+#include <arpa/inet.h>
 
 #define ERROR_MAX 128
 #define TEXT_MAX 128
 #define KEY_MAX 128
+#define MAX_EVENTS 10
 #define PIDFILE "geminid.pid"
 #define CONFIGFILE "geminid.conf"
 
@@ -346,15 +349,32 @@ boundsocket(const char *port)
     break;
   }
 
+  freeaddrinfo(info);
+
+  if (!p) {
+    syslog(LOG_ERR, "error binding socket");
+    exit(EXIT_FAILURE);
+  }
+
   return fd;
+}
+
+void *
+inaddr(struct sockaddr *sa)
+{
+  if (sa->sa_family == AF_INET)
+    return &((struct sockaddr_in *)sa)->sin_addr;
+  return &((struct sockaddr_in6 *)sa)->sin6_addr;
 }
 
 int
 main(int argc, char **argv)
 {
-  int bg, dry, verb, ch, sockfd;
-  char errbuf[ERROR_MAX], *confpath;
+  int bg, dry, verb, ch, sockfd, connfd;
+  socklen_t sinsz;
+  char errbuf[ERROR_MAX], addrstr[INET6_ADDRSTRLEN], *confpath;
   struct config c;
+  struct sockaddr_storage addr;
 
   bg = 1;
   confpath = strdup(SYSCONFDIR "/" CONFIGFILE);
@@ -403,6 +423,26 @@ main(int argc, char **argv)
     return EXIT_SUCCESS;
 
   sockfd = boundsocket(c.port);
+
+  if (listen(sockfd, MAX_EVENTS) == -1) {
+    syslog(LOG_ERR, "listen: %s", strerror(errno));
+    return EXIT_FAILURE;
+  }
+
+  syslog(LOG_NOTICE, "listening");
+
+  for (;;) {
+    sinsz = sizeof(struct sockaddr_storage);
+
+    if ((connfd = accept(sockfd, (struct sockaddr *)&addr, &sinsz)) == -1) {
+      syslog(LOG_ERR, "accept: %s", strerror(errno));
+      continue;
+    }
+
+    inet_ntop(addr.ss_family, inaddr((struct sockaddr *)&addr), addrstr, INET6_ADDRSTRLEN);
+    syslog(LOG_NOTICE, "accepted connection from %s", addrstr);
+    close(connfd);
+  }
 
   return EXIT_SUCCESS;
 }
