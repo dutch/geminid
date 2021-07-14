@@ -25,6 +25,8 @@
 
 struct config
 {
+  char *port;
+  int jobs;
   char *certificate;
   char *private_key;
 };
@@ -263,7 +265,12 @@ config_set(struct config *c, char *err, size_t errlen)
     return 1;
   }
 
-  if (strcmp(key, "certificate") == 0) {
+  if (strcmp(key, "port") == 0) {
+    free(c->port);
+    c->port = strdup(value);
+  } else if (strcmp(key, "jobs") == 0) {
+    c->jobs = atoi(value);
+  } else if (strcmp(key, "certificate") == 0) {
     c->certificate = strdup(value);
   } else if (strcmp(key, "private_key") == 0) {
     c->private_key = strdup(value);
@@ -321,6 +328,11 @@ main(int argc, char **argv)
   openlog("geminid", bg ? 0 : LOG_PERROR, 0);
   setlogmask(LOG_UPTO(verb ? LOG_DEBUG : LOG_ERR));
 
+  c.port = strdup("1965");
+  c.jobs = 1;
+  c.certificate = NULL;
+  c.private_key = NULL;
+
   if (!(in = fopen(confpath, "r"))) {
     syslog(LOG_ERR, "fopen: %s", strerror(errno));
     return EXIT_FAILURE;
@@ -335,6 +347,10 @@ main(int argc, char **argv)
     }
   }
 
+  fclose(in);
+
+  syslog(LOG_DEBUG, "port = '%s'", c.port);
+  syslog(LOG_DEBUG, "jobs = %d", c.jobs);
   syslog(LOG_DEBUG, "certificate = '%s'", c.certificate);
   syslog(LOG_DEBUG, "private_key = '%s'", c.private_key);
 
