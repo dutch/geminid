@@ -6,6 +6,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <syslog.h>
 #include <errno.h>
@@ -45,6 +46,7 @@ size_t textlen;
 void
 secondchild(int fd, int errfd, size_t errlen)
 {
+  int pidfd;
   char *errbuf;
   FILE *pidfile;
 
@@ -76,14 +78,21 @@ secondchild(int fd, int errfd, size_t errlen)
     exit(EXIT_FAILURE);
   }
 
-  if (!(pidfile = fopen(RUNSTATEDIR "/" PIDFILE, "w"))) {
-    snprintf(errbuf, errlen, "fopen: %s", strerror(errno));
+  if ((pidfd = open(RUNSTATEDIR "/" PIDFILE, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR)) == -1) {
+    snprintf(errbuf, errlen, "open: %s", strerror(errno));
+    write(errfd, errbuf, errlen);
+    exit(EXIT_FAILURE);
+  }
+
+  if (!(pidfile = fdopen(pidfd, "w"))) {
+    snprintf(errbuf, errlen, "fdopen: %s", strerror(errno));
     write(errfd, errbuf, errlen);
     exit(EXIT_FAILURE);
   }
 
   fprintf(pidfile, "%ld\n", (long)getpid());
   fclose(pidfile);
+  close(pidfd);
 
   free(errbuf);
   write(fd, "\0", 1);
@@ -442,6 +451,11 @@ main(int argc, char **argv)
     inet_ntop(addr.ss_family, inaddr((struct sockaddr *)&addr), addrstr, INET6_ADDRSTRLEN);
     syslog(LOG_NOTICE, "accepted connection from %s", addrstr);
     close(connfd);
+  }
+
+  if (unlink(RUNSTATEDIR "/" PIDFILE) == -1) {
+    syslog(LOG_ERR, "unlink: %s", strerror(errno));
+    return EXIT_FAILURE;
   }
 
   return EXIT_SUCCESS;
