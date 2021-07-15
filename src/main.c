@@ -379,12 +379,14 @@ inaddr(struct sockaddr *sa)
 int
 main(int argc, char **argv)
 {
-  int bg, dry, verb, ch, sockfd, connfd;
+  int ret, bg, dry, verb, ch, sockfd, epfd, nevs, connfd;
   socklen_t sinsz;
   char errbuf[ERROR_MAX], addrstr[INET6_ADDRSTRLEN], *confpath;
   struct config c;
   struct sockaddr_storage addr;
+  struct epoll_event evs[MAX_EVENTS];
 
+  ret = EXIT_FAILURE;
   bg = 1;
   confpath = strdup(SYSCONFDIR "/" CONFIGFILE);
   dry = 0;
@@ -414,7 +416,7 @@ main(int argc, char **argv)
   if (bg) {
     if (daemonize(errbuf, ERROR_MAX) == -1) {
       fprintf(stderr, "%s\n", errbuf);
-      return EXIT_FAILURE;
+      goto done;
     }
   }
 
@@ -428,35 +430,60 @@ main(int argc, char **argv)
 
   parse_config(confpath, &c);
 
-  if (dry)
-    return EXIT_SUCCESS;
+  if (dry) {
+    ret = EXIT_SUCCESS;
+    goto done;
+  }
 
   sockfd = boundsocket(c.port);
 
   if (listen(sockfd, MAX_EVENTS) == -1) {
     syslog(LOG_ERR, "listen: %s", strerror(errno));
-    return EXIT_FAILURE;
+    goto done;
   }
 
   syslog(LOG_NOTICE, "listening");
 
-  for (;;) {
-    sinsz = sizeof(struct sockaddr_storage);
-
-    if ((connfd = accept(sockfd, (struct sockaddr *)&addr, &sinsz)) == -1) {
-      syslog(LOG_ERR, "accept: %s", strerror(errno));
-      continue;
-    }
-
-    inet_ntop(addr.ss_family, inaddr((struct sockaddr *)&addr), addrstr, INET6_ADDRSTRLEN);
-    syslog(LOG_NOTICE, "accepted connection from %s", addrstr);
-    close(connfd);
+  if ((epfd = epoll_create1(0)) == -1) {
+    syslog(LOG_ERR, "epoll_create1: %s", strerror(errno));
+    goto done;
   }
 
+  evs[0].events = EPOLLIN;
+  evs[0].data.fd = sockfd;
+
+  if (epoll_ctl(epfd, EPOLL_CTL_ADD, sockfd, evs) == -1) {
+    syslog(LOG_ERR, "epoll_ctl: %s", strerror(errno));
+    goto done;
+  }
+
+  for (;;) {
+    if ((nevs = epoll_wait(epfd, evs, MAX_EVENTS, -1)) == -1) {
+      syslog(LOG_ERR, "epoll_wait: %s", strerror(errno));
+      goto done;
+    }
+
+    while (nevs --> 0) {
+      if (evs[nevs].data.fd == sockfd) {
+        sinsz = sizeof(struct sockaddr_storage);
+
+        if ((connfd = accept(sockfd, (struct sockaddr *)&addr, &sinsz)) == -1) {
+          syslog(LOG_ERR, "accept: %s", strerror(errno));
+          continue;
+        }
+
+        inet_ntop(addr.ss_family, inaddr((struct sockaddr *)&addr), addrstr, INET6_ADDRSTRLEN);
+        syslog(LOG_NOTICE, "accepted connection from %s", addrstr);
+        close(connfd);
+      }
+    }
+  }
+
+done:
   if (unlink(RUNSTATEDIR "/" PIDFILE) == -1) {
     syslog(LOG_ERR, "unlink: %s", strerror(errno));
     return EXIT_FAILURE;
   }
 
-  return EXIT_SUCCESS;
+  return ret;
 }
