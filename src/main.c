@@ -395,8 +395,14 @@ acceptproc(int epfd)
   char addrstr[INET6_ADDRSTRLEN];
 
   for (;;) {
-    if ((nevs = epoll_wait(epfd, evs, MAX_EVENTS, -1)) == -1)
+    if ((nevs = epoll_wait(epfd, evs, MAX_EVENTS, -1)) == -1) {
+      if (errno == EINTR)
+        continue;
+
       syslog(LOG_ERR, "epoll_wait: %s", strerror(errno));
+    }
+
+    syslog(LOG_DEBUG, "wakeup on %ld", (long)getpid());
 
     while (nevs --> 0) {
       sinsz = sizeof(struct sockaddr_storage);
@@ -406,7 +412,7 @@ acceptproc(int epfd)
 
       inet_ntop(addr.ss_family, inaddr((struct sockaddr *)&addr), addrstr, INET6_ADDRSTRLEN);
       syslog(LOG_NOTICE, "accepted connection from %s", addrstr);
-      close(evs[nevs].data.fd);
+      close(connfd);
     }
   }
 }
@@ -510,7 +516,7 @@ main(int argc, char **argv)
     goto done;
   }
 
-  evs[0].events = EPOLLIN | EPOLLEXCLUSIVE;
+  evs[0].events = EPOLLIN | EPOLLEXCLUSIVE;;
   evs[0].data.fd = sockfd;
 
   if (epoll_ctl(connepfd, EPOLL_CTL_ADD, sockfd, evs) == -1) {
@@ -547,6 +553,9 @@ main(int argc, char **argv)
 
   for (;;) {
     if ((nevs = epoll_wait(epfd, evs, MAX_EVENTS, -1)) == -1) {
+      if (errno == EINTR)
+        continue;
+
       syslog(LOG_ERR, "epoll_wait: %s", strerror(errno));
       goto done;
     }
