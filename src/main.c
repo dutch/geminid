@@ -1,5 +1,4 @@
-#define _XOPEN_SOURCE 500
-#define _POSIX_C_SOURCE 200809L
+#define _GNU_SOURCE
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,6 +8,7 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <syslog.h>
+#include <signal.h>
 #include <errno.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -16,6 +16,8 @@
 #include <sys/select.h>
 #include <sys/stat.h>
 #include <sys/epoll.h>
+#include <sys/signalfd.h>
+#include <sys/wait.h>
 #include <netdb.h>
 #include <arpa/inet.h>
 
@@ -146,15 +148,22 @@ daemonize(char *err, size_t errlen)
     if (close(rlim.rlim_cur) == -1) {
       if (errno == EBADF)
         continue;
+
       snprintf(err, errlen, "close: %s", strerror(errno));
       return -1;
     }
   }
 
-  for (i = SIGRTMIN; i < SIGRTMAX; ++i) {
+  sigfillset(&set);
+
+  for (i = 1; i < _NSIG; ++i) {
+    if (!sigismember(&set, i))
+      continue;
+
     if (signal(i, SIG_DFL) == SIG_ERR) {
       if (i == SIGKILL || i == SIGSTOP)
         continue;
+
       snprintf(err, errlen, "signal: %s", strerror(errno));
       return -1;
     }
@@ -376,15 +385,62 @@ inaddr(struct sockaddr *sa)
   return &((struct sockaddr_in6 *)sa)->sin6_addr;
 }
 
+void
+acceptproc(int epfd)
+{
+  int nevs, connfd;
+  socklen_t sinsz;
+  struct epoll_event evs[MAX_EVENTS];
+  struct sockaddr_storage addr;
+  char addrstr[INET6_ADDRSTRLEN];
+
+  for (;;) {
+    if ((nevs = epoll_wait(epfd, evs, MAX_EVENTS, -1)) == -1)
+      syslog(LOG_ERR, "epoll_wait: %s", strerror(errno));
+
+    while (nevs --> 0) {
+      sinsz = sizeof(struct sockaddr_storage);
+
+      if ((connfd = accept4(evs[nevs].data.fd, (struct sockaddr *)&addr, &sinsz, SOCK_NONBLOCK)) == -1)
+        syslog(LOG_ERR, "accept4: %s", strerror(errno));
+
+      inet_ntop(addr.ss_family, inaddr((struct sockaddr *)&addr), addrstr, INET6_ADDRSTRLEN);
+      syslog(LOG_NOTICE, "accepted connection from %s", addrstr);
+      close(evs[nevs].data.fd);
+    }
+  }
+}
+
+void
+prefork(int epfd, pid_t *forks, int nforks)
+{
+  pid_t pid;
+
+  while (nforks --> 0) {
+    switch ((pid = fork())) {
+    case -1:
+      syslog(LOG_ERR, "fork: %s", strerror(errno));
+      exit(EXIT_FAILURE);
+
+    case 0:
+      acceptproc(epfd);
+      return;
+    }
+
+    forks[nforks] = pid;
+  }
+}
+
 int
 main(int argc, char **argv)
 {
-  int ret, bg, dry, verb, ch, sockfd, epfd, nevs, connfd;
-  socklen_t sinsz;
-  char errbuf[ERROR_MAX], addrstr[INET6_ADDRSTRLEN], *confpath;
+  int ret, bg, dry, verb, ch, sockfd, epfd, connepfd, sigfd, nevs;
+  sigset_t blockset;
+  pid_t *pids;
+  char errbuf[ERROR_MAX], *confpath;
   struct config c;
-  struct sockaddr_storage addr;
   struct epoll_event evs[MAX_EVENTS];
+  struct signalfd_siginfo ssi;
 
   ret = EXIT_FAILURE;
   bg = 1;
@@ -449,11 +505,43 @@ main(int argc, char **argv)
     goto done;
   }
 
-  evs[0].events = EPOLLIN;
+  if ((connepfd = epoll_create1(0)) == -1) {
+    syslog(LOG_ERR, "epoll_create1: %s", strerror(errno));
+    goto done;
+  }
+
+  evs[0].events = EPOLLIN | EPOLLEXCLUSIVE;
   evs[0].data.fd = sockfd;
 
-  if (epoll_ctl(epfd, EPOLL_CTL_ADD, sockfd, evs) == -1) {
+  if (epoll_ctl(connepfd, EPOLL_CTL_ADD, sockfd, evs) == -1) {
     syslog(LOG_ERR, "epoll_ctl: %s", strerror(errno));
+    goto done;
+  }
+
+  sigemptyset(&blockset);
+  sigaddset(&blockset, SIGINT);
+  sigaddset(&blockset, SIGTERM);
+  sigaddset(&blockset, SIGHUP);
+  sigaddset(&blockset, SIGUSR1);
+
+  if ((sigfd = signalfd(-1, &blockset, SFD_NONBLOCK)) == -1) {
+    syslog(LOG_ERR, "signalfd: %s", strerror(errno));
+    goto done;
+  }
+
+  evs[0].events = EPOLLIN | EPOLLET;
+  evs[0].data.fd = sigfd;
+
+  if (epoll_ctl(epfd, EPOLL_CTL_ADD, sigfd, evs) == -1) {
+    syslog(LOG_ERR, "epoll_ctl: %s", strerror(errno));
+    goto done;
+  }
+
+  pids = malloc(sizeof(pid_t) * c.jobs);
+  prefork(connepfd, pids, c.jobs);
+
+  if (sigprocmask(SIG_BLOCK, &blockset, NULL) == -1) {
+    syslog(LOG_ERR, "sigprocmask: %s", strerror(errno));
     goto done;
   }
 
@@ -464,23 +552,43 @@ main(int argc, char **argv)
     }
 
     while (nevs --> 0) {
-      if (evs[nevs].data.fd == sockfd) {
-        sinsz = sizeof(struct sockaddr_storage);
+      if (evs[nevs].data.fd == sigfd) {
+        for (;;) {
+          if (read(sigfd, &ssi, sizeof(struct signalfd_siginfo)) == -1) {
+            if (errno == EAGAIN)
+              break;
 
-        if ((connfd = accept(sockfd, (struct sockaddr *)&addr, &sinsz)) == -1) {
-          syslog(LOG_ERR, "accept: %s", strerror(errno));
-          continue;
+            syslog(LOG_ERR, "read: %s", strerror(errno));
+            goto done;
+          }
+
+          switch (ssi.ssi_signo) {
+          case SIGINT:
+          case SIGTERM:
+            syslog(LOG_WARNING, "received '%s', exiting", strsignal(ssi.ssi_signo));
+            while (c.jobs --> 0)
+              kill(pids[c.jobs], SIGKILL);
+            goto done;
+
+          case SIGHUP:
+          case SIGUSR1:
+            syslog(LOG_WARNING, "received '%s', reloading config files", strsignal(ssi.ssi_signo));
+            while (c.jobs --> 0) {
+              kill(pids[c.jobs], SIGKILL);
+              waitpid(pids[c.jobs], NULL, 0);
+            }
+            parse_config(confpath, &c);
+            pids = malloc(sizeof(pid_t) * c.jobs);
+            prefork(connepfd, pids, c.jobs);
+            break;
+          }
         }
-
-        inet_ntop(addr.ss_family, inaddr((struct sockaddr *)&addr), addrstr, INET6_ADDRSTRLEN);
-        syslog(LOG_NOTICE, "accepted connection from %s", addrstr);
-        close(connfd);
       }
     }
   }
 
 done:
-  if (unlink(RUNSTATEDIR "/" PIDFILE) == -1) {
+  if (bg && unlink(RUNSTATEDIR "/" PIDFILE) == -1) {
     syslog(LOG_ERR, "unlink: %s", strerror(errno));
     return EXIT_FAILURE;
   }
