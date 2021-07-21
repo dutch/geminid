@@ -20,6 +20,8 @@
 #include <sys/wait.h>
 #include <netdb.h>
 #include <arpa/inet.h>
+#include <openssl/ssl.h>
+#include <openssl/err.h>
 
 #define ERROR_MAX 128
 #define TEXT_MAX 128
@@ -386,39 +388,44 @@ inaddr(struct sockaddr *sa)
 }
 
 void
-acceptproc(int epfd)
+acceptproc(int epfd, SSL_CTX *ctx)
 {
   int nevs, connfd;
   socklen_t sinsz;
   struct epoll_event evs[MAX_EVENTS];
   struct sockaddr_storage addr;
   char addrstr[INET6_ADDRSTRLEN];
+  SSL *ssl;
 
   for (;;) {
     if ((nevs = epoll_wait(epfd, evs, MAX_EVENTS, -1)) == -1) {
       if (errno == EINTR)
         continue;
-
-      syslog(LOG_ERR, "epoll_wait: %s", strerror(errno));
+      /* error */
     }
-
-    syslog(LOG_DEBUG, "wakeup on %ld", (long)getpid());
 
     while (nevs --> 0) {
       sinsz = sizeof(struct sockaddr_storage);
 
-      if ((connfd = accept4(evs[nevs].data.fd, (struct sockaddr *)&addr, &sinsz, SOCK_NONBLOCK)) == -1)
-        syslog(LOG_ERR, "accept4: %s", strerror(errno));
+      if ((connfd = accept4(evs[nevs].data.fd, (struct sockaddr *)&addr, &sinsz, SOCK_NONBLOCK)) == -1) {
+        /* error */
+      }
+
+      ssl = SSL_new(ctx);
+      SSL_set_fd(ssl, connfd);
+      SSL_accept(ssl);
+      SSL_shutdown(ssl);
+      SSL_free(ssl);
 
       inet_ntop(addr.ss_family, inaddr((struct sockaddr *)&addr), addrstr, INET6_ADDRSTRLEN);
-      syslog(LOG_NOTICE, "accepted connection from %s", addrstr);
+      /* syslog(LOG_NOTICE, "accepted connection from %s", addrstr); */
       close(connfd);
     }
   }
 }
 
 void
-prefork(int epfd, pid_t *forks, int nforks)
+prefork(int epfd, SSL_CTX *ctx, pid_t *forks, int nforks)
 {
   pid_t pid;
 
@@ -429,7 +436,7 @@ prefork(int epfd, pid_t *forks, int nforks)
       exit(EXIT_FAILURE);
 
     case 0:
-      acceptproc(epfd);
+      acceptproc(epfd, ctx);
       return;
     }
 
@@ -447,6 +454,7 @@ main(int argc, char **argv)
   struct config c;
   struct epoll_event evs[MAX_EVENTS];
   struct signalfd_siginfo ssi;
+  SSL_CTX *ctx;
 
   ret = EXIT_FAILURE;
   bg = 1;
@@ -497,6 +505,14 @@ main(int argc, char **argv)
     goto done;
   }
 
+  SSL_load_error_strings();
+  OpenSSL_add_ssl_algorithms();
+
+  ctx = SSL_CTX_new(TLSv1_2_server_method());
+  SSL_CTX_set_ecdh_auto(ctx, 1);
+  SSL_CTX_use_certificate_file(ctx, c.certificate, SSL_FILETYPE_PEM);
+  SSL_CTX_use_PrivateKey_file(ctx, c.private_key, SSL_FILETYPE_PEM);
+
   sockfd = boundsocket(c.port);
 
   if (listen(sockfd, MAX_EVENTS) == -1) {
@@ -544,7 +560,7 @@ main(int argc, char **argv)
   }
 
   pids = malloc(sizeof(pid_t) * c.jobs);
-  prefork(connepfd, pids, c.jobs);
+  prefork(connepfd, ctx, pids, c.jobs);
 
   if (sigprocmask(SIG_BLOCK, &blockset, NULL) == -1) {
     syslog(LOG_ERR, "sigprocmask: %s", strerror(errno));
@@ -588,7 +604,7 @@ main(int argc, char **argv)
             }
             parse_config(confpath, &c);
             pids = malloc(sizeof(pid_t) * c.jobs);
-            prefork(connepfd, pids, c.jobs);
+            prefork(connepfd, ctx, pids, c.jobs);
             break;
           }
         }
