@@ -1,9 +1,10 @@
 #define _GNU_SOURCE
 
+#include "daemon.h"
+#include "parse.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <ctype.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -24,312 +25,7 @@
 #include <openssl/err.h>
 
 #define ERROR_MAX 128
-#define TEXT_MAX 128
-#define KEY_MAX 128
 #define MAX_EVENTS 10
-#define PIDFILE "geminid.pid"
-#define CONFIGFILE "geminid.conf"
-
-#define EQUALS 1
-#define EOL 2
-#define STRING 3
-
-struct config
-{
-  char *port;
-  int jobs;
-  char *certificate;
-  char *private_key;
-};
-
-FILE *in;
-char nextch;
-char text[TEXT_MAX];
-size_t textlen;
-
-void
-secondchild(int fd, int errfd, size_t errlen)
-{
-  int pidfd;
-  char *errbuf;
-  FILE *pidfile;
-
-  errbuf = malloc(errlen);
-
-  if (!freopen("/dev/null", "r", stdin)) {
-    snprintf(errbuf, errlen, "freopen: %s", strerror(errno));
-    write(errfd, errbuf, errlen);
-    exit(EXIT_FAILURE);
-  }
-
-  if (!freopen("/dev/null", "w", stdout)) {
-    snprintf(errbuf, errlen, "freopen: %s", strerror(errno));
-    write(errfd, errbuf, errlen);
-    exit(EXIT_FAILURE);
-  }
-
-  if (!freopen("/dev/null", "w", stderr)) {
-    snprintf(errbuf, errlen, "freopen: %s", strerror(errno));
-    write(errfd, errbuf, errlen);
-    exit(EXIT_FAILURE);
-  }
-
-  umask(0);
-
-  if (chdir("/") == -1) {
-    snprintf(errbuf, errlen, "chdir: %s", strerror(errno));
-    write(errfd, errbuf, errlen);
-    exit(EXIT_FAILURE);
-  }
-
-  if ((pidfd = open(RUNSTATEDIR "/" PIDFILE, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR)) == -1) {
-    snprintf(errbuf, errlen, "open: %s", strerror(errno));
-    write(errfd, errbuf, errlen);
-    exit(EXIT_FAILURE);
-  }
-
-  if (!(pidfile = fdopen(pidfd, "w"))) {
-    snprintf(errbuf, errlen, "fdopen: %s", strerror(errno));
-    write(errfd, errbuf, errlen);
-    exit(EXIT_FAILURE);
-  }
-
-  fprintf(pidfile, "%ld\n", (long)getpid());
-  fclose(pidfile);
-  close(pidfd);
-
-  free(errbuf);
-  write(fd, "\0", 1);
-}
-
-void
-firstchild(int fd, int errfd, size_t errlen)
-{
-  char *errbuf;
-
-  errbuf = malloc(errlen);
-
-  if (setsid() == -1) {
-    snprintf(errbuf, errlen, "setsid: %s", strerror(errno));
-    write(errfd, errbuf, errlen);
-    exit(EXIT_FAILURE);
-  }
-
-  switch (fork()) {
-  case -1:
-    close(fd);
-    snprintf(errbuf, errlen, "fork: %s", strerror(errno));
-    write(errfd, errbuf, errlen);
-    exit(EXIT_FAILURE);
-
-  case 0:
-    secondchild(fd, errfd, errlen);
-    break;
-
-  default:
-    exit(EXIT_SUCCESS);
-  }
-
-  free(errbuf);
-}
-
-int
-daemonize(char *err, size_t errlen)
-{
-  int i, fds[2], errfds[2];
-  struct rlimit rlim;
-  sigset_t set;
-  fd_set fdset;
-
-  if (getrlimit(RLIMIT_NOFILE, &rlim) == -1) {
-    snprintf(err, errlen, "getrlimit: %s", strerror(errno));
-    return -1;
-  }
-
-  while (rlim.rlim_cur --> 3) {
-    if (close(rlim.rlim_cur) == -1) {
-      if (errno == EBADF)
-        continue;
-
-      snprintf(err, errlen, "close: %s", strerror(errno));
-      return -1;
-    }
-  }
-
-  sigfillset(&set);
-
-  for (i = 1; i < _NSIG; ++i) {
-    if (!sigismember(&set, i))
-      continue;
-
-    if (signal(i, SIG_DFL) == SIG_ERR) {
-      if (i == SIGKILL || i == SIGSTOP)
-        continue;
-
-      snprintf(err, errlen, "signal: %s", strerror(errno));
-      return -1;
-    }
-  }
-
-  sigemptyset(&set);
-
-  if (sigprocmask(SIG_SETMASK, &set, NULL) == -1) {
-    snprintf(err, errlen, "sigprocmask: %s", strerror(errno));
-    return -1;
-  }
-
-  if (pipe(fds) == -1) {
-    snprintf(err, errlen, "pipe: %s", strerror(errno));
-    return -1;
-  }
-
-  if (pipe(errfds) == -1) {
-    snprintf(err, errlen, "pipe: %s", strerror(errno));
-    return -1;
-  }
-
-  switch (fork()) {
-  case -1:
-    close(fds[0]);
-    close(fds[1]);
-    close(errfds[0]);
-    close(errfds[1]);
-    snprintf(err, errlen, "fork: %s", strerror(errno));
-    return -1;
-
-  case 0:
-    close(fds[0]);
-    close(errfds[0]);
-    firstchild(fds[1], errfds[1], errlen);
-    break;
-
-  default:
-    close(fds[1]);
-    close(errfds[1]);
-    FD_ZERO(&fdset);
-    FD_SET(fds[0], &fdset);
-    FD_SET(errfds[0], &fdset);
-
-    if (select(50, &fdset, NULL, NULL, NULL) == -1) {
-      snprintf(err, errlen, "select: %s", strerror(errno));
-      return -1;
-    }
-
-    if (FD_ISSET(fds[0], &fdset))
-      exit(EXIT_SUCCESS);
-
-    if (FD_ISSET(errfds[0], &fdset)) {
-      read(errfds[0], err, errlen);
-      return -1;
-    }
-
-    exit(EXIT_SUCCESS);
-  }
-
-  return 0;
-}
-
-int
-lex(void)
-{
-  textlen = 0;
-
-  if (nextch == '\n') {
-    text[textlen++] = nextch;
-    text[textlen] = '\0';
-    nextch = fgetc(in);
-    return EOL;
-  }
-
-  while (isspace(nextch))
-    nextch = fgetc(in);
-
-  if (nextch == '=') {
-    text[textlen++] = nextch;
-    text[textlen] = '\0';
-    nextch = fgetc(in);
-    return EQUALS;
-  }
-
-  if (isgraph(nextch)) {
-    do text[textlen++] = nextch;
-    while (!isspace(nextch = fgetc(in)));
-    text[textlen] = '\0';
-    return STRING;
-  }
-
-  return 0;
-}
-
-void
-config_set(struct config *c)
-{
-  int type;
-  char *key, *value;
-
-  if ((type = lex()) != STRING) {
-    syslog(LOG_ERR, "expected key, got '%s'", text);
-    exit(EXIT_FAILURE);
-  }
-
-  key = strdup(text);
-
-  if ((type = lex()) != EQUALS) {
-    syslog(LOG_ERR, "expected '=', got '%s'", text);
-    exit(EXIT_FAILURE);
-  }
-
-  if ((type = lex()) != STRING) {
-    syslog(LOG_ERR, "expected value, got '%s'", text);
-    exit(EXIT_FAILURE);
-  }
-
-  value = strdup(text);
-
-  if ((type = lex()) != EOL) {
-    syslog(LOG_ERR, "expected EOL, got '%s'", text);
-    exit(EXIT_FAILURE);
-  }
-
-  if (strcmp(key, "port") == 0) {
-    free(c->port);
-    c->port = strdup(value);
-    syslog(LOG_DEBUG, "port = '%s'", c->port);
-  } else if (strcmp(key, "jobs") == 0) {
-    c->jobs = atoi(value);
-    syslog(LOG_DEBUG, "jobs = %d", c->jobs);
-  } else if (strcmp(key, "certificate") == 0) {
-    free(c->certificate);
-    c->certificate = strdup(value);
-    syslog(LOG_DEBUG, "certificate = '%s'", c->certificate);
-  } else if (strcmp(key, "private_key") == 0) {
-    free(c->private_key);
-    c->private_key = strdup(value);
-    syslog(LOG_DEBUG, "private_key = '%s'", c->private_key);
-  } else {
-    syslog(LOG_ERR, "unknown key '%s'", key);
-    exit(EXIT_FAILURE);
-  }
-
-  free(value);
-  free(key);
-}
-
-void
-parse_config(const char *confpath, struct config *c)
-{
-  if (!(in = fopen(confpath, "r"))) {
-    syslog(LOG_ERR, "fopen: %s", strerror(errno));
-    exit(EXIT_FAILURE);
-  }
-
-  nextch = fgetc(in);
-
-  while (!feof(in))
-    config_set(c);
-
-  fclose(in);
-}
 
 int
 boundsocket(const char *port)
@@ -379,86 +75,80 @@ boundsocket(const char *port)
   return fd;
 }
 
-void *
-inaddr(struct sockaddr *sa)
-{
-  if (sa->sa_family == AF_INET)
-    return &((struct sockaddr_in *)sa)->sin_addr;
-  return &((struct sockaddr_in6 *)sa)->sin6_addr;
-}
-
 void
-acceptproc(int epfd, SSL_CTX *ctx)
+acceptproc(int fd, SSL_CTX *ctx)
 {
-  int nevs, connfd;
-  socklen_t sinsz;
+  int nevs, connfd, nbytes;
   struct epoll_event evs[MAX_EVENTS];
-  struct sockaddr_storage addr;
-  char addrstr[INET6_ADDRSTRLEN];
   SSL *ssl;
+  char buf[1024];
+  struct parse_context urictx;
+  struct uriparts uri;
 
   for (;;) {
-    if ((nevs = epoll_wait(epfd, evs, MAX_EVENTS, -1)) == -1) {
+    if ((nevs = epoll_wait(fd, evs, MAX_EVENTS, -1)) == -1) {
       if (errno == EINTR)
         continue;
       /* error */
     }
 
     while (nevs --> 0) {
-      sinsz = sizeof(struct sockaddr_storage);
-
-      if ((connfd = accept4(evs[nevs].data.fd, (struct sockaddr *)&addr, &sinsz, SOCK_NONBLOCK)) == -1) {
+      if ((connfd = accept(evs[nevs].data.fd, NULL, NULL)) == -1) {
         /* error */
       }
 
       ssl = SSL_new(ctx);
       SSL_set_fd(ssl, connfd);
       SSL_accept(ssl);
+      nbytes = SSL_read(ssl, buf, 1024);
+      buf[nbytes] = '\0';
+      parse_uri(&urictx, buf, &uri);
+      syslog(LOG_NOTICE, "scheme = '%s'", uri.scheme);
       SSL_shutdown(ssl);
       SSL_free(ssl);
 
-      inet_ntop(addr.ss_family, inaddr((struct sockaddr *)&addr), addrstr, INET6_ADDRSTRLEN);
-      /* syslog(LOG_NOTICE, "accepted connection from %s", addrstr); */
       close(connfd);
     }
   }
 }
 
 void
-prefork(int epfd, SSL_CTX *ctx, pid_t *forks, int nforks)
+prefork(int fd, SSL_CTX *ctx, pid_t *pids, int npids)
 {
   pid_t pid;
 
-  while (nforks --> 0) {
+  while (npids --> 0) {
     switch ((pid = fork())) {
     case -1:
       syslog(LOG_ERR, "fork: %s", strerror(errno));
       exit(EXIT_FAILURE);
 
     case 0:
-      acceptproc(epfd, ctx);
+      acceptproc(fd, ctx);
       return;
     }
 
-    forks[nforks] = pid;
+    pids[npids] = pid;
   }
 }
 
 int
 main(int argc, char **argv)
 {
-  int ret, bg, dry, verb, ch, sockfd, epfd, connepfd, sigfd, nevs;
+  int ret, bg, dry, verb, ch, sockfd, backlog, epfd, connepfd, sigfd, nevs;
   sigset_t blockset;
   pid_t *pids;
-  char errbuf[ERROR_MAX], *confpath;
-  struct config c;
+  char errbuf[ERROR_MAX], *cfgpath;
+  struct parse_context cfgctx;
+  struct config cfg;
   struct epoll_event evs[MAX_EVENTS];
   struct signalfd_siginfo ssi;
-  SSL_CTX *ctx;
+  FILE *somaxconn;
+  SSL_CTX *sslctx;
 
   ret = EXIT_FAILURE;
   bg = 1;
-  confpath = strdup(SYSCONFDIR "/" CONFIGFILE);
+  cfgpath = strdup(SYSCONFDIR "/geminid.conf");
   dry = 0;
   verb = 0;
 
@@ -469,8 +159,8 @@ main(int argc, char **argv)
       break;
 
     case 'f':
-      free(confpath);
-      confpath = strdup(optarg);
+      free(cfgpath);
+      cfgpath = strdup(optarg);
       break;
 
     case 'n':
@@ -484,7 +174,7 @@ main(int argc, char **argv)
   }
 
   if (bg) {
-    if (daemonize(errbuf, ERROR_MAX) == -1) {
+    if (daemonize(RUNSTATEDIR "/geminid.pid", errbuf, ERROR_MAX) == -1) {
       fprintf(stderr, "%s\n", errbuf);
       goto done;
     }
@@ -493,12 +183,13 @@ main(int argc, char **argv)
   openlog("geminid", bg ? 0 : LOG_PERROR, 0);
   setlogmask(LOG_UPTO(verb ? LOG_DEBUG : LOG_ERR));
 
-  c.port = strdup("1965");
-  c.jobs = 1;
-  c.certificate = NULL;
-  c.private_key = NULL;
+  cfg.port = strdup("1965");
+  cfg.jobs = 1;
+  cfg.certificate = NULL;
+  cfg.private_key = NULL;
+  cfg.root = strdup("/var/gmiroot");
 
-  parse_config(confpath, &c);
+  parse_config(&cfgctx, cfgpath, &cfg);
 
   if (dry) {
     ret = EXIT_SUCCESS;
@@ -508,14 +199,27 @@ main(int argc, char **argv)
   SSL_load_error_strings();
   OpenSSL_add_ssl_algorithms();
 
-  ctx = SSL_CTX_new(TLSv1_2_server_method());
-  SSL_CTX_set_ecdh_auto(ctx, 1);
-  SSL_CTX_use_certificate_file(ctx, c.certificate, SSL_FILETYPE_PEM);
-  SSL_CTX_use_PrivateKey_file(ctx, c.private_key, SSL_FILETYPE_PEM);
+  sslctx = SSL_CTX_new(TLS_server_method());
+  SSL_CTX_set_min_proto_version(sslctx, TLS1_2_VERSION);
+  SSL_CTX_set_ecdh_auto(sslctx, 1);
+  SSL_CTX_use_certificate_file(sslctx, cfg.certificate, SSL_FILETYPE_PEM);
+  SSL_CTX_use_PrivateKey_file(sslctx, cfg.private_key, SSL_FILETYPE_PEM);
 
-  sockfd = boundsocket(c.port);
+  sockfd = boundsocket(cfg.port);
 
-  if (listen(sockfd, MAX_EVENTS) == -1) {
+  if (!(somaxconn = fopen("/proc/sys/net/core/somaxconn", "r"))) {
+    syslog(LOG_ERR, "fopen: %s", strerror(errno));
+    goto done;
+  }
+
+  if (fscanf(somaxconn, "%d", &backlog) == EOF) {
+    syslog(LOG_ERR, "fscanf: %s", strerror(errno));
+    goto done;
+  }
+
+  fclose(somaxconn);
+
+  if (listen(sockfd, backlog) == -1) {
     syslog(LOG_ERR, "listen: %s", strerror(errno));
     goto done;
   }
@@ -532,7 +236,7 @@ main(int argc, char **argv)
     goto done;
   }
 
-  evs[0].events = EPOLLIN | EPOLLEXCLUSIVE;;
+  evs[0].events = EPOLLIN | EPOLLEXCLUSIVE;
   evs[0].data.fd = sockfd;
 
   if (epoll_ctl(connepfd, EPOLL_CTL_ADD, sockfd, evs) == -1) {
@@ -559,8 +263,8 @@ main(int argc, char **argv)
     goto done;
   }
 
-  pids = malloc(sizeof(pid_t) * c.jobs);
-  prefork(connepfd, ctx, pids, c.jobs);
+  pids = malloc(sizeof(pid_t) * cfg.jobs);
+  prefork(connepfd, sslctx, pids, cfg.jobs);
 
   if (sigprocmask(SIG_BLOCK, &blockset, NULL) == -1) {
     syslog(LOG_ERR, "sigprocmask: %s", strerror(errno));
@@ -591,20 +295,20 @@ main(int argc, char **argv)
           case SIGINT:
           case SIGTERM:
             syslog(LOG_WARNING, "received '%s', exiting", strsignal(ssi.ssi_signo));
-            while (c.jobs --> 0)
-              kill(pids[c.jobs], SIGKILL);
+            while (cfg.jobs --> 0)
+              kill(pids[cfg.jobs], SIGKILL);
             goto done;
 
           case SIGHUP:
           case SIGUSR1:
             syslog(LOG_WARNING, "received '%s', reloading config files", strsignal(ssi.ssi_signo));
-            while (c.jobs --> 0) {
-              kill(pids[c.jobs], SIGKILL);
-              waitpid(pids[c.jobs], NULL, 0);
+            while (cfg.jobs --> 0) {
+              kill(pids[cfg.jobs], SIGKILL);
+              waitpid(pids[cfg.jobs], NULL, 0);
             }
-            parse_config(confpath, &c);
-            pids = malloc(sizeof(pid_t) * c.jobs);
-            prefork(connepfd, ctx, pids, c.jobs);
+            parse_config(&cfgctx, cfgpath, &cfg);
+            pids = malloc(sizeof(pid_t) * cfg.jobs);
+            prefork(connepfd, sslctx, pids, cfg.jobs);
             break;
           }
         }
@@ -613,7 +317,7 @@ main(int argc, char **argv)
   }
 
 done:
-  if (bg && unlink(RUNSTATEDIR "/" PIDFILE) == -1) {
+  if (bg && unlink(RUNSTATEDIR "/geminid.pid") == -1) {
     syslog(LOG_ERR, "unlink: %s", strerror(errno));
     return EXIT_FAILURE;
   }
