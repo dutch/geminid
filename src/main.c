@@ -1,5 +1,7 @@
 #define _GNU_SOURCE
 
+#include "config.h"
+#include "gettext.h"
 #include "daemon.h"
 #include "parse.h"
 #include <stdio.h>
@@ -26,6 +28,8 @@
 
 #define ERROR_MAX 128
 #define MAX_EVENTS 10
+
+#define _(String) gettext(String)
 
 int
 boundsocket(const char *port)
@@ -145,6 +149,10 @@ main(int argc, char **argv)
   struct signalfd_siginfo ssi;
   FILE *somaxconn;
   SSL_CTX *sslctx;
+
+  setlocale(LC_ALL, "");
+  bindtextdomain(PACKAGE, LOCALEDIR);
+  textdomain(PACKAGE);
 
   ret = EXIT_FAILURE;
   bg = 1;
@@ -294,7 +302,7 @@ main(int argc, char **argv)
           switch (ssi.ssi_signo) {
           case SIGINT:
           case SIGTERM:
-            syslog(LOG_WARNING, "received '%s', exiting", strsignal(ssi.ssi_signo));
+            syslog(LOG_WARNING, _("received '%s', exiting"), strsignal(ssi.ssi_signo));
             while (cfg.jobs --> 0)
               kill(pids[cfg.jobs], SIGKILL);
             goto done;
