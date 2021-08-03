@@ -328,7 +328,7 @@ main(int argc, char **argv)
 
           case SIGHUP:
           case SIGUSR1:
-            syslog(LOG_WARNING, "received '%s', reloading config files", strsignal(ssi.ssi_signo));
+            syslog(LOG_WARNING, _("received '%s', reloading config files"), strsignal(ssi.ssi_signo));
             while (cfg.jobs --> 0) {
               kill(pids[cfg.jobs], SIGKILL);
               waitpid(pids[cfg.jobs], NULL, 0);
