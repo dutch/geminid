@@ -232,7 +232,7 @@ main(int argc, char **argv)
     goto done;
   }
 
-  syslog(LOG_NOTICE, "listening");
+  syslog(LOG_NOTICE, _("listening"));
 
   if ((epfd = epoll_create1(0)) == -1) {
     syslog(LOG_ERR, "epoll_create1: %s", strerror(errno));

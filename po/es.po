@@ -1,21 +1,25 @@
 # Spanish translations for geminid package.
 # Copyright (C) 2021 Chris Lamberson
 # This file is distributed under the same license as the geminid package.
-# Chris Lamberson <chris@lamberson.online>, 2021.
+#  <chris@lamberson.online>, 2021.
 #
 msgid ""
 msgstr ""
 "Project-Id-Version: geminid UNKNOWN\n"
 "Report-Msgid-Bugs-To: https://github.com/dutch/geminid/issues\n"
-"POT-Creation-Date: 2021-07-30 13:55-0700\n"
-"PO-Revision-Date: 2021-07-30 14:02-0700\n"
-"Last-Translator: Chris Lamberson <chris@lamberson.online>\n"
-"Language-Team: Spanish <es@tp.org.es>\n"
-"Language: es_MX\n"
+"POT-Creation-Date: 2021-08-03 11:37-0700\n"
+"PO-Revision-Date: 2021-08-03 09:42-0700\n"
+"Last-Translator:  <chris@lamberson.online>\n"
+"Language-Team: Spanish\n"
+"Language: es\n"
 "MIME-Version: 1.0\n"
-"Content-Type: text/plain; charset=ASCII\n"
+"Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+#: src/main.c:235
+msgid "listening"
+msgstr "escuchando"
 
 #: src/main.c:305
 #, c-format
