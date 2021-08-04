@@ -9,6 +9,7 @@ AM_GNU_GETTEXT([external])
 AM_GNU_GETTEXT_VERSION([0.19])
 GEMINID_INIT
 AC_PROG_CC
+AC_PROG_SED
 PKG_CHECK_MODULES([OPENSSL], [openssl], [], [:])
 AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_FILES([Makefile po/Makefile.in])

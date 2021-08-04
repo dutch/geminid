@@ -1,0 +1,12 @@
+[Unit]
+Description=Gemini Server
+Documentation=man:geminid(1)
+
+[Service]
+Type=forking
+ExecStart=@bindir@/geminid
+ExecReload=kill -HUP $MAINPID
+PIDFile=@runstatedir@/geminid.pid
+
+[Install]
+WantedBy=multi-user.target
