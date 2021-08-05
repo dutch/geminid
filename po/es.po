@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: geminid UNKNOWN\n"
 "Report-Msgid-Bugs-To: https://github.com/dutch/geminid/issues\n"
-"POT-Creation-Date: 2021-08-03 14:13-0700\n"
+"POT-Creation-Date: 2021-08-05 12:15-0700\n"
 "PO-Revision-Date: 2021-08-03 09:42-0700\n"
 "Last-Translator:  <chris@lamberson.online>\n"
 "Language-Team: Spanish\n"
@@ -26,7 +26,7 @@ msgstr "escuchando"
 msgid "received '%s', exiting"
 msgstr "recibí '%s', salgo"
 
-#: src/main.c:331
+#: src/main.c:332
 #, c-format
 msgid "received '%s', reloading config files"
 msgstr "recibí '%s', recargando archivos de configuración"

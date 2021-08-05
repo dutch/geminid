@@ -120,13 +120,14 @@ acceptproc(int fd, SSL_CTX *ctx)
         /* error */
       }
 
+      memset(&urictx, 0, sizeof(struct parse_context));
+
       ssl = SSL_new(ctx);
       SSL_set_fd(ssl, connfd);
       SSL_accept(ssl);
       nbytes = SSL_read(ssl, buf, 1024);
       buf[nbytes] = '\0';
       parse_uri(&urictx, buf, &uri);
-      syslog(LOG_NOTICE, "scheme = '%s'", uri.scheme);
       SSL_shutdown(ssl);
       SSL_free(ssl);
 

@@ -6,6 +6,8 @@
 #define EQUALS 1
 #define EOL 2
 #define STRING 3
+#define SEPARATOR 4
+#define SLASH 5
 
 struct parse_context
 {
@@ -28,6 +30,7 @@ struct config
 struct uriparts
 {
   char *scheme;
+  char *domain;
   char *path;
 };
 

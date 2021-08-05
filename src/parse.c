@@ -42,9 +42,38 @@ lex_config(struct parse_context *ctx)
 static int
 lex_uri(struct parse_context *ctx)
 {
+  ctx->textlen = 0;
+
+  if (*ctx->pch == ':') {
+    ctx->text[ctx->textlen++] = *ctx->pch++;
+    ctx->text[ctx->textlen] = '\0';
+    return SEPARATOR;
+  }
+
+  if (*ctx->pch == '/') {
+    ctx->text[ctx->textlen++] = *ctx->pch++;
+    ctx->text[ctx->textlen] = '\0';
+    return SLASH;
+  }
+
   if (isgraph(*ctx->pch)) {
-    do ctx->text[ctx->textlen++] = *ctx->pch;
-    while (*(++ctx->pch) != ':');
+    do ctx->text[ctx->textlen++] = *ctx->pch++;
+    while (*ctx->pch != ':' && *ctx->pch != '/');
+    ctx->text[ctx->textlen] = '\0';
+    return STRING;
+  }
+
+  return 0;
+}
+
+static int
+lex_uri_path(struct parse_context *ctx)
+{
+  ctx->textlen = 0;
+
+  if (isgraph(*ctx->pch)) {
+    do ctx->text[ctx->textlen++] = *ctx->pch++;
+    while (!isspace(*ctx->pch));
     ctx->text[ctx->textlen] = '\0';
     return STRING;
   }
@@ -113,7 +142,7 @@ config_set(struct parse_context *ctx, struct config *cfg)
 static void
 uri_set(struct parse_context *ctx, struct uriparts *uri)
 {
-  int type;
+  int type, n;
 
   if ((type = lex_uri(ctx)) != STRING) {
     syslog(LOG_ERR, "expected scheme, got '%s'", ctx->text);
@@ -121,6 +150,32 @@ uri_set(struct parse_context *ctx, struct uriparts *uri)
   }
 
   uri->scheme = strdup(ctx->text);
+
+  if ((type = lex_uri(ctx)) != SEPARATOR) {
+    syslog(LOG_ERR, "expected ':', got '%s'", ctx->text);
+    exit(EXIT_FAILURE);
+  }
+
+  for (n = 1; n <= 2; ++n) {
+    if ((type = lex_uri(ctx)) != SLASH) {
+      syslog(LOG_ERR, "expected '/', got '%s'", ctx->text);
+      exit(EXIT_FAILURE);
+    }
+  }
+
+  if ((type = lex_uri(ctx)) != STRING) {
+    syslog(LOG_ERR, "expected domain, got '%s'", ctx->text);
+    exit(EXIT_FAILURE);
+  }
+
+  uri->domain = strdup(ctx->text);
+
+  if ((type = lex_uri_path(ctx)) != STRING) {
+    syslog(LOG_ERR, "expected path, got '%s'", ctx->text);
+    exit(EXIT_FAILURE);
+  }
+
+  uri->path = strdup(ctx->text);
 }
 
 void
