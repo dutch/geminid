@@ -324,6 +324,7 @@ main(int argc, char **argv)
             syslog(LOG_WARNING, _("received '%s', exiting"), strsignal(ssi.ssi_signo));
             while (cfg.jobs --> 0)
               kill(pids[cfg.jobs], SIGKILL);
+            ret = EXIT_SUCCESS;
             goto done;
 
           case SIGHUP:
